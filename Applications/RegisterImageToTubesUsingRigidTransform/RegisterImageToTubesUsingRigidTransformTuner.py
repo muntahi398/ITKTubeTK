@@ -14,13 +14,100 @@ import pyqtgraph as pg
 import pyqtgraph.console
 import pyqtgraph.dockarea
 import pyqtgraph.opengl as gl
+from pyqtgraph.dockarea import Dock
 from pyqtgraph.Qt import QtCore, QtGui
+import pyqtgraph.parametertree
+from pyqtgraph.parametertree.parameterTypes import GroupParameter
+SIGNAL = QtCore.SIGNAL
 import SimpleITK as sitk
 import tables
 import matplotlib.cm
 
 from tubetk.pyqtgraph import tubes_as_circles
 from tubetk.numpy import tubes_from_file
+
+
+class PythonListParameter(GroupParameter):
+    """Unique parameter type for a python list."""
+    pass
+
+pyqtgraph.parametertree.registerParameterType('pythonlist',
+                                              PythonListParameter)
+
+
+def json_to_pg_parameter(in_dict):
+    """Convert a Python dictionary describing a json object to a list
+    describing a pyqtgraph Parameter object."""
+    out_list = []
+    for key, value in in_dict.iteritems():
+        param = {'name': key}
+        if type(value) == int:
+            param['type'] = 'int'
+            param['value'] = value
+        elif type(value) == float:
+            param['type'] = 'float'
+            param['value'] = value
+        elif type(value) == bool:
+            param['type'] = 'bool'
+            param['value'] = value
+        elif type(value) == unicode:
+            param['type'] = 'str'
+            param['value'] = value
+            param['default'] = value
+        elif type(value) == dict:
+            param['type'] = 'group'
+            param['children'] = json_to_pg_parameter(value)
+        elif type(value) == list:
+            param['type'] = 'pythonlist'
+            children = []
+            # note: nested lists not supported here
+            for ii, entry in enumerate(value):
+                pgentry = {'name': str(ii)}
+                if type(entry) == int:
+                    pgentry['type'] = 'int'
+                    pgentry['value'] = entry
+                elif type(entry) == float:
+                    pgentry['type'] = 'float'
+                    pgentry['value'] = entry
+                elif type(entry) == bool:
+                    pgentry['type'] = 'bool'
+                    pgentry['value'] = entry
+                elif type(entry) == unicode:
+                    pgentry['type'] = 'str'
+                    pgentry['value'] = entry
+                elif type(entry) == dict:
+                    pgentry['type'] = 'group'
+                    pgentry['children'] = json_to_pg_parameter(entry)
+                else:
+                    raise TypeError('Unhandled type: ' + str(type(entry)))
+                children.append(pgentry)
+            param['children'] = children
+        else:
+            raise TypeError('Unhandled type: ' + str(type(value)))
+        out_list.append(param)
+
+    return out_list
+
+
+class ParametersDock(Dock):
+    """A tree of Qt widgets representing the algorithm parameters."""
+
+    def __init__(self, config, *args, **kwargs):
+        super(ParametersDock, self).__init__(*args, **kwargs)
+
+        self.config = config
+
+        param_children = json_to_pg_parameter(self.config)
+        Parameter = pg.parametertree.Parameter
+        self.parameter = Parameter.create(name='Analysis Parameters',
+                                          type='group',
+                                          children=param_children)
+        self.parameter_tree = pg.parametertree.ParameterTree()
+        self.parameter_tree.setParameters(self.parameter, showTop=False)
+        self.addWidget(self.parameter_tree)
+
+    def get_parameter(self):
+        return self.parameter
 
 
 class RegistrationTuner(QtGui.QMainWindow):
@@ -57,7 +144,8 @@ class RegistrationTuner(QtGui.QMainWindow):
         exit_action = QtGui.QAction('&Exit', self)
         exit_action.setShortcut('Ctrl+Q')
         exit_action.setStatusTip('Exit application')
-        exit_action.triggered.connect(QtGui.QApplication.instance().quit)
+        QtCore.QObject.connect(exit_action, SIGNAL('triggered()'),
+                               QtGui.QApplication.instance().quit)
         self.addAction(exit_action)
 
         iteration_dock_area_layout = QtGui.QVBoxLayout()
@@ -75,7 +163,7 @@ class RegistrationTuner(QtGui.QMainWindow):
         self.iteration_spinbox.setMinimum(0)
         self.iteration_spinbox.setMaximum(self.number_of_iterations)
         QtCore.QObject.connect(self.iteration_spinbox,
-                               QtCore.SIGNAL('valueChanged(int)'),
+                               SIGNAL('valueChanged(int)'),
                                self._iteration_spinbox_changed)
         iteration_layout.addWidget(self.iteration_spinbox)
         self.iteration_slider = QtGui.QSlider(QtCore.Qt.Horizontal)
@@ -83,31 +171,29 @@ class RegistrationTuner(QtGui.QMainWindow):
         self.iteration_slider.setMaximum(self.number_of_iterations)
         self.iteration_slider.setTickPosition(QtGui.QSlider.TicksBelow)
         QtCore.QObject.connect(self.iteration_slider,
-                               QtCore.SIGNAL('valueChanged(int)'),
+                               SIGNAL('valueChanged(int)'),
                                self._iteration_slider_changed)
         QtCore.QObject.connect(self.iteration_slider,
-                               QtCore.SIGNAL('sliderReleased()'),
+                               SIGNAL('sliderReleased()'),
                                self._iteration_slider_changed)
         iteration_layout.addWidget(self.iteration_slider, stretch=1)
-
-        Dock = pyqtgraph.dockarea.Dock
 
         run_button = QtGui.QPushButton('Run Analysis')
         run_button.setToolTip('Run the analysis with ' +
                               'current parameter settings.')
         run_button.resize(run_button.sizeHint())
-        QtCore.QObject.connect(run_button, QtCore.SIGNAL('clicked()'),
+        QtCore.QObject.connect(run_button, SIGNAL('clicked()'),
                                self.run_analysis)
         run_action = QtGui.QAction('&Run Analysis', self)
         run_action.setShortcut('Ctrl+R')
         run_action.setStatusTip('Run Analysis')
-        QtCore.QObject.connect(run_action, QtCore.SIGNAL('triggered()'),
+        QtCore.QObject.connect(run_action, SIGNAL('triggered()'),
                                self.run_analysis)
         self.addAction(run_action)
 
         video_button = QtGui.QPushButton('Make Video Frames')
         video_button.resize(video_button.sizeHint())
-        QtCore.QObject.connect(video_button, QtCore.SIGNAL('clicked()'),
+        QtCore.QObject.connect(video_button, SIGNAL('clicked()'),
                                self.make_video)
         # todo do properly
         self.video_frame_dir = '/tmp/registration_tuner'
@@ -138,6 +224,13 @@ available as 'config'.  The RegistrationTuner instance is available as 'tuner'.
         run_console_dock = Dock("Console", size=(400, 300))
         run_console_dock.addWidget(run_console)
         self.dock_area.addDock(run_console_dock, 'right')
+
+        parameters_dock = ParametersDock(self.config,
+                                         'Analysis Parameters',
+                                         size=(400, 300))
+        parameter = parameters_dock.get_parameter()
+        parameter.sigTreeStateChanged.connect(self._config_widget_changed)
+        self.dock_area.addDock(parameters_dock, 'above', run_console_dock)
 
         self.image_tubes = gl.GLViewWidget()
         if 'Visualization' in self.config:
@@ -517,6 +610,9 @@ available as 'config'.  The RegistrationTuner instance is available as 'tuner'.
             image_item.rotate(-90, 0, 1, 0)
             image_item.translate(spacing[0] * index, 0, 0)
         return image_item
+
+    def _config_widget_changed(self, param, changed):
+        print('tree state changed!')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
