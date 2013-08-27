@@ -559,6 +559,7 @@ ImageToTubeRigidMetric< TFixedImage, TMovingSpatialObject, TTubeSpatialObject >
         }
       }
     }
+  delete tubeList;
 
   derivative[0] = dAngle[0].GetSum();
   derivative[1] = dAngle[1].GetSum();
